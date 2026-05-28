@@ -1,79 +1,52 @@
 """
-Hybrid Liquidity Provider + Mean-Reversion Inventory Management Agent
-=====================================================================
+Pure Liquidity Provider Agent — High Volume / Sharpe-Maximised
+==============================================================
 
-Cornice teorica
----------------
-ABIDES RMSC04 e' un mercato SIMULATO popolato da agenti regolati: Noise,
-Value, MarketMaker.  Non ci sono insider ne' informazione privilegiata
-asimmetrica strutturalmente sfruttabile: di conseguenza NON applichiamo
-premio di adverse selection a la Glosten-Milgrom sullo spread.
+Strategia
+---------
+Pure market making senza alcun segnale direzionale (no trend, no mean
+reversion, no Glosten-Milgrom premium). L'edge dell'agente e' la
+cattura sistematica del bid-ask spread sui flow non-informati. Per
+massimizzare contemporaneamente VOLUME e PROFITTO usiamo:
 
-Il fundamental e' un processo Ornstein-Uhlenbeck (OU) MEAN-REVERTING:
-ogni deviazione dalla media tende a essere riassorbita con velocita'
-theta.  Questa proprieta' e' lo stylized fact centrale che la strategia
-sfrutta.  Sui timeframe intraday il mid-price del ticker eredita la
-stessa proprieta' tramite gli ordini dei ValueAgents.
+1.  **Microprice** (Stoikov 2018) come fair value di riferimento, anche'
+    del mid: e' un predittore migliore del prossimo prezzo perche' pesa
+    il fair value verso il lato del book con meno liquidita'.
+2.  **Inside-spread quoting**: quando lo spread di mercato e' largo
+    abbastanza, postiamo DENTRO il book (market_bid + 1, market_ask - 1)
+    per ottenere priorita' di queue → fill quasi certi quando arrivano
+    ordini marketable. Quando il mercato e' gia' stretto (1-2 ticks)
+    joiniamo la coda al best bid/best ask.
+3.  **Adaptive spread**: lo spread quotato e' max(base_half_spread,
+    k_vol * sigma). Quando la vol esplode il nostro spread si allarga
+    automaticamente, compensando l'adverse selection senza bisogno di
+    altri segnali.
+4.  **Avellaneda-Stoikov inventory skew**: skew = -alpha_inv * inventory
+    spinge le quote in direzione opposta all'inventario per controllare
+    la varianza della posizione (riduce sigma del pnl ⇒ Sharpe sale).
+5.  **Refresh ad alta frequenza** (4 secondi): piu' refresh = piu'
+    chance di fill = piu' volume.
+6.  **Size piccola per quote** (20 share/lato): tanti piccoli fill
+    invece di pochi grossi → varianza per trade bassa → Sharpe alto.
+7.  **Inventory cap + stop-loss + EOD flatten**: niente posizioni che
+    esplodono, niente rischio overnight.
 
 Riferimenti
 -----------
-- Byrd et al. (2020), ABIDES RMSC04: fundamental OU mean-reverting.
-- Stoikov (2018), microprice: fair value pesato per i volumi al best
-  level, miglior predittore del prossimo prezzo rispetto al mid.
-- Avellaneda & Stoikov (2008), HFT market making: il MM ottimo skewa
-  le quote contro il proprio inventario per controllarne la volatilita.
-- Statistical arbitrage classico (Pole 2007, Avellaneda & Lee 2010):
-  trade su z-score di una serie mean-reverting, posizioni di segno
-  opposto alla deviazione.
+- Stoikov (2018), "The micro-price".
+- Avellaneda & Stoikov (2008), "High-frequency trading in a limit order
+  book": forma chiusa per skew anti-inventario in un mercato OU.
+- Ho & Stoll (1981), "Optimal dealer pricing under transactions and
+  return uncertainty": inventory management nei dealer markets.
 
-Strategia: Mean-Reverting Market Maker
---------------------------------------
-A ogni wake-up (~6 secondi):
- 1.  Cancella le quote vecchie ancora vive sul book.
- 2.  Interroga lo spread; in receive_message su QuerySpreadResponseMsg:
- 3.  Legge (bid, V_bid, ask, V_ask) dal book → calcola microprice e mid.
- 4.  Aggiorna rolling history del mid (window di ~6 min) → rolling_mean
-     e rolling_std → z-score = (mid - mean) / std.
- 5.  Stop-loss giornaliero (M2M).
- 6.  Spread quotato adattivo:
-         half_spread_q = max(base_half_spread, k_vol * realized_vol)
-     Niente termine Glosten-Milgrom: nessun adverse selection premium.
- 7.  Skew composito (cents):
-         skew = - alpha_inv * inventory          (Avellaneda-Stoikov)
-                - alpha_mr  * z_score            (mean-reversion alpha)
-     Se z > 0 (prezzo alto, atteso ribasso): abbassa il mid quotato.
-     Se z < 0 (prezzo basso, atteso rialzo): alza il mid quotato.
-     L'effetto netto sull'inventario:
-       - long & z>0: skew NEGATIVO ⇒ ask scende ⇒ liquidazione veloce.
-       - long & z<0: skew POSITIVO ⇒ ask sale ⇒ tieni il long, sale.
-       - short & z>0: MR domina, skew NEG ⇒ ask scende ⇒ ride lo short.
-       - short & z<0: skew POSITIVO ⇒ bid sale ⇒ copri lo short.
- 8.  ONE-SIDED quoting per segnali MR forti (|z| > z_strong):
-         z >  z_strong ⇒ posta solo ASK (prezzo alto, build short).
-         z < -z_strong ⇒ posta solo BID (prezzo basso, build long).
-     Questo evita di accumulare inventario nella direzione SBAGLIATA
-     proprio quando il segnale di reversione e' piu' affidabile.
- 9.  Vol-scaled order size: in regime di alta volatilita' la size si
-     riduce, abbattendo la varianza per trade (numeratore del Sharpe
-     penalizzato meno dal denominatore che esplode in regimi rumorosi).
-10.  Inventory cap (max_inv).
-11.  EOD flatten 5 min prima del close per azzerare il rischio
-     overnight.
-
-Massimizzazione dello Sharpe ratio
-----------------------------------
-Sharpe = E[r] / sigma(r).  Per massimizzarlo:
-- One-sided quoting nei regimi |z|>strong evita accumulo nella
-  direzione sbagliata ⇒ riduce drawdown tail ⇒ sigma cala.
-- Vol scaling sull'order_size riduce la variance per trade ⇒ sigma cala.
-- Skew aggressivo accelera il take-profit alla reversione ⇒ E[r] sale.
-- Stop-loss giornaliero tronca la coda sinistra della distribuzione di
-  pnl ⇒ kurtosis e sigma calano.
-- EOD flatten elimina rischio overnight ⇒ jump risk eliminato.
-
-L'agente NON e' un puro market maker (avrebbe edge negativo contro i
-ValueAgents) ne' un puro stat-arb (perderebbe il guadagno dello spread):
-e' un MM con view direzionale che fa entrambe le cose insieme.
+Massimizzazione Sharpe
+----------------------
+Sharpe = E[r] / sigma(r). Le scelte di design:
+- Inside quoting ⇒ piu' fill ⇒ E[r] sale.
+- Vol scaling sullo spread ⇒ sigma cala in regimi rumorosi.
+- Inventory skew aggressivo ⇒ sigma cala (posizione vincolata).
+- Stop-loss + EOD flatten ⇒ code della distribuzione di pnl troncate.
+- Tante operazioni piccole ⇒ legge dei grandi numeri ⇒ sigma cala.
 """
 
 from typing import List, Optional
@@ -90,40 +63,29 @@ from abides_markets.agents.trading_agent import TradingAgent
 
 class HybridLPTrendAgent(TradingAgent):
     """
-    Liquidity provider con inventory management mean-reversion-driven.
+    Pure liquidity provider con inside-spread quoting e Avellaneda-Stoikov
+    inventory skew.
 
     Nota: il nome della classe e' rimasto 'HybridLPTrendAgent' per
-    retrocompatibilita' con il notebook esistente, ma la strategia
-    interna e' completamente mean-reversion (non trend following).
-    Vedi il docstring del modulo per il razionale e le referenze.
+    retrocompatibilita' con il notebook esistente. La strategia interna e'
+    market making puro — niente trend following, niente mean reversion,
+    niente premio Glosten-Milgrom.  Vedi docstring del modulo per dettagli.
 
-    Parametri
-    ---------
+    Parametri principali
+    --------------------
     base_half_spread
-        Half-spread minimo in cents.
+        Half-spread minimo in cents. Floor sullo spread quotato.
     k_vol
         Premio sullo spread proporzionale alla volatilita' realizzata.
-    mr_window
-        Lookback (osservazioni) per rolling mean e std del mid.
-    z_enter
-        |z| minimo per attivare la componente MR dello skew (no-edge
-        zone sotto questa soglia).
-    z_strong
-        |z| sopra cui si fa ONE-SIDED quoting: si posta solo il lato
-        coerente col segnale di mean reversion.
+        Lo spread effettivo e' max(base_half_spread, k_vol * sigma).
     alpha_inv
-        Skew cents/share per leaning against inventory.
-    alpha_mr
-        Skew cents per unita' di z-score.
+        Skew cents/share contro l'inventario (Avellaneda-Stoikov).
     order_size, max_inv
-        Size base per quote e inventario massimo assoluto.
-    vol_size_scale
-        Aggressivita' del vol-scaling sull'order_size (0 = off).
-    stop_loss_cents
-        Drawdown M2M massimo (cents) prima di flattenare la posizione e
-        smettere di tradare per la giornata.
-    eod_flatten_offset
-        Anticipo rispetto al close per liquidare l'inventario residuo.
+        Size per quote e inventario massimo assoluto.
+    wake_up_freq
+        Cadenza di refresh delle quote (default 4s = molto reattivo).
+    stop_loss_cents, eod_flatten_offset
+        Risk management standard.
     """
 
     def __init__(
@@ -134,24 +96,20 @@ class HybridLPTrendAgent(TradingAgent):
         name: Optional[str] = None,
         type: Optional[str] = None,
         random_state: Optional[np.random.RandomState] = None,
-        # spread (no Glosten-Milgrom term)
+        # spread (adaptive: base + vol component)
         base_half_spread: int = 4,
-        k_vol: float = 2.0,
-        # mean reversion signal
-        mr_window: int = 60,                # ~6 min at 6s wake-up
-        z_enter: float = 0.5,
-        z_strong: float = 1.8,
-        # skew
-        alpha_inv: float = 0.3,
-        alpha_mr: float = 7.0,
-        # size
-        order_size: int = 30,
-        max_inv: int = 200,
-        vol_size_scale: float = 0.3,
-        # frequency
-        wake_up_freq: NanosecondTime = str_to_ns("6s"),
+        k_vol: float = 2.5,
+        # inventory skew (Avellaneda-Stoikov)
+        alpha_inv: float = 0.4,
+        # size & inventory
+        order_size: int = 20,
+        max_inv: int = 300,
+        # vol tracking
+        vol_window: int = 60,
+        # frequency: 4s for high refresh rate
+        wake_up_freq: NanosecondTime = str_to_ns("4s"),
         # risk
-        stop_loss_cents: int = 40000,
+        stop_loss_cents: int = 50000,
         eod_flatten_offset: NanosecondTime = str_to_ns("5min"),
         log_orders: bool = False,
     ) -> None:
@@ -160,25 +118,12 @@ class HybridLPTrendAgent(TradingAgent):
         self.symbol = symbol
         self.starting_cash = starting_cash
 
-        # spread
         self.base_half_spread = base_half_spread
         self.k_vol = k_vol
-
-        # MR signal
-        self.mr_window = mr_window
-        self.z_enter = z_enter
-        self.z_strong = z_strong
-
-        # skew
         self.alpha_inv = alpha_inv
-        self.alpha_mr = alpha_mr
-
-        # size
         self.order_size = order_size
         self.max_inv = max_inv
-        self.vol_size_scale = vol_size_scale
-
-        # frequency & risk
+        self.vol_window = vol_window
         self.wake_up_freq = wake_up_freq
         self.stop_loss_cents = stop_loss_cents
         self.eod_flatten_offset = eod_flatten_offset
@@ -206,7 +151,7 @@ class HybridLPTrendAgent(TradingAgent):
         if not can_trade or self.stopped_out:
             return
 
-        # EOD: flatten + stop trading.
+        # EOD: cancel + flatten + stop trading for the day.
         if (
             self.eod_flatten_time is not None
             and current_time >= self.eod_flatten_time
@@ -216,6 +161,7 @@ class HybridLPTrendAgent(TradingAgent):
             self.stopped_out = True
             return
 
+        # Routine: cancel old quotes, then query spread.
         self._cancel_live_quotes()
         self.get_current_spread(self.symbol)
         self.state = "AWAITING_SPREAD"
@@ -236,15 +182,14 @@ class HybridLPTrendAgent(TradingAgent):
 
         if bid and ask and (bid_vol + ask_vol) > 0:
             mid = (bid + ask) / 2.0
-            # Microprice (Stoikov): peso il fair value verso il lato meno
-            # liquido. Predittore migliore del mid sul brevissimo termine.
+            # Microprice: peso il fair value verso il lato meno liquido.
             microprice = (bid * ask_vol + ask * bid_vol) / (bid_vol + ask_vol)
 
             self.mid_history.append(mid)
-            if len(self.mid_history) > self.mr_window * 3:
-                self.mid_history = self.mid_history[-self.mr_window * 2:]
+            if len(self.mid_history) > self.vol_window * 3:
+                self.mid_history = self.mid_history[-self.vol_window * 2:]
 
-            # Stop-loss giornaliero.
+            # Stop-loss giornaliero: trunca le code della distribuzione di pnl.
             if self._check_stop_loss():
                 self._cancel_live_quotes()
                 self._flatten_inventory()
@@ -262,33 +207,15 @@ class HybridLPTrendAgent(TradingAgent):
         return self.wake_up_freq
 
     # ------------------------------------------------------------------
-    # Helpers — segnale mean reversion
+    # Helpers
     # ------------------------------------------------------------------
-
-    def _rolling_stats(self):
-        """Ritorna (mean, std) sugli ultimi mr_window mid, o (None, None)."""
-        if len(self.mid_history) < self.mr_window:
-            return None, None
-        recent = self.mid_history[-self.mr_window:]
-        return float(np.mean(recent)), float(np.std(recent))
-
-    def _z_score(self, mid: float) -> float:
-        """z-score del mid rispetto al rolling mean. 0 finche' non c'e' storia."""
-        mean, std = self._rolling_stats()
-        if mean is None or std is None or std < 1e-6:
-            return 0.0
-        return (mid - mean) / std
 
     def _realized_vol(self) -> float:
         """Vol realizzata recente del mid (std, in cents)."""
         if len(self.mid_history) < 5:
             return 0.0
-        n = min(self.mr_window, len(self.mid_history))
+        n = min(self.vol_window, len(self.mid_history))
         return float(np.std(self.mid_history[-n:]))
-
-    # ------------------------------------------------------------------
-    # Helpers — risk & ordini
-    # ------------------------------------------------------------------
 
     def _check_stop_loss(self) -> bool:
         try:
@@ -313,57 +240,49 @@ class HybridLPTrendAgent(TradingAgent):
             self.place_market_order(self.symbol, quantity=-inv, side=Side.BID)
 
     # ------------------------------------------------------------------
-    # Posting logic
+    # Quoting logic — pure LP con inside-spread + inventory skew
     # ------------------------------------------------------------------
 
     def _post_quotes(
         self, microprice: float, market_bid: int, market_ask: int
     ) -> None:
         inventory = self.holdings.get(self.symbol, 0)
-        mid = (market_bid + market_ask) / 2.0
-        z = self._z_score(mid)
+        market_spread = market_ask - market_bid
+
+        # Spread quotato: adattivo sulla volatilita' realizzata.
         vol = self._realized_vol()
+        desired_half_spread = max(float(self.base_half_spread), self.k_vol * vol)
 
-        # === spread quotato (adattivo solo per volatilita') ===
-        half_spread = max(float(self.base_half_spread), self.k_vol * vol)
-
-        # === skew composito ===
-        # Componente 1 (Avellaneda-Stoikov): lean against inventory.
-        # Componente 2 (mean reversion): segno opposto al z-score.  Solo
-        # quando |z| > z_enter (no-edge zone altrimenti per evitare di
-        # tradare rumore).
-        mr_component = -self.alpha_mr * z if abs(z) > self.z_enter else 0.0
-        skew = -self.alpha_inv * inventory + mr_component
-
+        # Inventory skew (Avellaneda-Stoikov): shift sul mid quotato per
+        # leaning against position. Long ⇒ skew negativo ⇒ quotes giu'
+        # ⇒ piu' facile vendere, piu' difficile comprare ancora.
+        skew = -self.alpha_inv * inventory
         quoted_mid = microprice + skew
-        our_bid = int(round(quoted_mid - half_spread))
-        our_ask = int(round(quoted_mid + half_spread))
 
-        # Safety: non crossare il book opposto, spread minimo 1 cent.
-        our_bid = min(our_bid, market_bid)
-        our_ask = max(our_ask, market_ask)
+        target_bid = int(round(quoted_mid - desired_half_spread))
+        target_ask = int(round(quoted_mid + desired_half_spread))
+
+        # === inside-spread quoting ===
+        # Se lo spread di mercato e' largo (>= 2 ticks oltre il nostro
+        # desired spread + 2), abbiamo spazio per postare DENTRO il book
+        # ottenendo priorita' di queue (best bid / best ask).
+        # Altrimenti joiniamo la coda al best bid/best ask attuali.
+        if market_spread >= 2 * self.base_half_spread + 2:
+            # mercato largo: posta inside
+            our_bid = max(target_bid, market_bid + 1)
+            our_ask = min(target_ask, market_ask - 1)
+        else:
+            # mercato gia' stretto: joina la coda al best
+            our_bid = market_bid
+            our_ask = market_ask
+
+        # Safety: garantisci bid < ask.
         if our_ask <= our_bid:
             our_ask = our_bid + 1
 
-        # === vol-scaled order size ===
-        # In regimi rumorosi riduce la size per abbassare la variance.
-        scale = 1.0
-        if self.vol_size_scale > 0 and vol > 0:
-            scale = 1.0 - self.vol_size_scale * (vol / (vol + 3.0))
-            scale = max(0.3, scale)
-        effective_size = max(1, int(self.order_size * scale))
-
-        # === ONE-SIDED quoting su |z| forte ===
-        # z >  z_strong → prezzo molto alto, vogliamo solo VENDERE (build
-        # short / mantieni short). Niente bid.
-        # z < -z_strong → prezzo molto basso, vogliamo solo COMPRARE
-        # (build long / mantieni long). Niente ask.
-        post_bid_allowed = (z <= self.z_strong)
-        post_ask_allowed = (z >= -self.z_strong)
-
         # === posta bid ===
-        if inventory < self.max_inv and post_bid_allowed:
-            bid_qty = min(effective_size, self.max_inv - inventory)
+        if inventory < self.max_inv:
+            bid_qty = min(self.order_size, self.max_inv - inventory)
             if bid_qty > 0:
                 self.place_limit_order(
                     self.symbol,
@@ -375,8 +294,8 @@ class HybridLPTrendAgent(TradingAgent):
                     self.bid_order_id = max(self.orders.keys())
 
         # === posta ask ===
-        if inventory > -self.max_inv and post_ask_allowed:
-            ask_qty = min(effective_size, self.max_inv + inventory)
+        if inventory > -self.max_inv:
+            ask_qty = min(self.order_size, self.max_inv + inventory)
             if ask_qty > 0:
                 self.place_limit_order(
                     self.symbol,
