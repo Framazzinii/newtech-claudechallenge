@@ -128,25 +128,25 @@ class HybridLPTrendAgent(TradingAgent):
         name: Optional[str] = None,
         type: Optional[str] = None,
         random_state: Optional[np.random.RandomState] = None,
-        # spread / quote
-        base_half_spread: int = 6,
-        k_vol: float = 1.5,
-        k_adv: float = 0.8,
+        # spread / quote — spread piu' largo per coprire adverse selection
+        base_half_spread: int = 12,       # ↑ da 6 (combatte adverse selection)
+        k_vol: float = 2.5,               # ↑ da 1.5 (piu' premio per vol)
+        k_adv: float = 1.8,               # ↑ da 0.8 (piu' premio Glosten-Milgrom)
         # skew
-        alpha_inv: float = 0.4,
+        alpha_inv: float = 0.5,           # ↑ da 0.4
         alpha_trend: float = 3.0,
-        alpha_obi: float = 1.2,
+        alpha_obi: float = 2.5,           # ↑ da 1.2 (lean piu' forte da informed flow)
         # size & inventory
-        order_size: int = 25,
-        max_inv: int = 300,
+        order_size: int = 20,             # ↓ da 25 (size piu' piccola = meno adverse selection)
+        max_inv: int = 200,               # ↓ da 300 (turnover piu' veloce)
         # EMA per trend
         fast_span: int = 12,
         slow_span: int = 40,
         trend_tol: float = 0.0002,
         # rolling vol & OBI
         vol_window: int = 30,
-        obi_toxic_window: int = 10,
-        obi_toxic_threshold: float = 0.6,
+        obi_toxic_window: int = 8,        # ↓ da 10 (reagisce piu' in fretta)
+        obi_toxic_threshold: float = 0.45,  # ↓ da 0.6 (pull quotes prima)
         # frequency
         wake_up_freq: NanosecondTime = str_to_ns("8s"),
         # risk
