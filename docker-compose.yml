@@ -1,0 +1,28 @@
+# `docker compose up`              → start JupyterLab on http://localhost:8888
+# `docker compose run --rm abides` → run an arbitrary command (used by `make smoke`, `make test`, `make shell`)
+#
+# The whole project root is bind-mounted into /abides so that source edits on
+# the host take effect immediately (the three sub-packages are pip-installed
+# in editable mode inside the image).
+services:
+  abides:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: abides-lab
+    container_name: abides-lab
+    ports:
+      - "8888:8888"
+    environment:
+      # Optional: set a token if you ever expose port 8888 beyond localhost.
+      # Default is empty so students can connect without a password.
+      JUPYTER_TOKEN: "${JUPYTER_TOKEN:-}"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      # Whole project source bind-mounted so editable installs see live edits.
+      - .:/abides
+      # Persist student work even if the container is removed.
+      - ./student_work:/abides/student_work
+    # Keeps stdin attached so `docker compose run` and `make shell` are usable.
+    stdin_open: true
+    tty: true

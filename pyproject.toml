@@ -1,0 +1,33 @@
+# Repo-level pyproject.toml.
+#
+# This file does NOT define a Python package — the three sub-packages
+# (abides-core, abides-markets, abides-gym) each have their own
+# pyproject.toml and are installed in editable mode by the Dockerfile and the
+# legacy install scripts.
+#
+# What lives here is shared tool configuration: mypy, black, isort, etc.
+# Per-tool docs:
+#   mypy:  https://mypy.readthedocs.io/en/stable/config_file.html
+#   black: https://black.readthedocs.io/en/stable/usage_and_configuration/the_basics.html
+#   isort: https://pycqa.github.io/isort/docs/configuration/black_compatibility.html
+
+[tool.mypy]
+# Loose for now; tighten as the codebase improves.
+ignore_missing_imports = false
+
+[[tool.mypy.overrides]]
+module = ["numpy.*", "pandas.*", "scipy.*"]
+ignore_missing_imports = true
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+known_first_party = ["abides_core", "abides_markets", "abides_gym"]
+
+[tool.pytest.ini_options]
+testpaths = ["abides-core/tests", "abides-markets/tests"]
+addopts = "-q"

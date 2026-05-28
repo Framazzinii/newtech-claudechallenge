@@ -1,0 +1,37 @@
+# Top-level direct dependencies for the ABIDES classroom environment.
+#
+# This file feeds `pip-compile` (via `make lock`) which produces a fully-pinned
+# requirements.lock that the Docker build installs from.
+#
+# What goes here:
+#   - Runtime deps that the sub-packages need (mirrored from each sub-package's
+#     setup.cfg install_requires). They live here too because pip-compile can't
+#     follow cross-local-package references like "abides-markets depends on
+#     abides-core". The setup.cfg files remain the source of truth for users
+#     who `pip install ./abides-core` in isolation.
+#   - Lab-environment extras (JupyterLab, matplotlib) that the sub-packages
+#     don't pull.
+#
+# What does NOT go here:
+#   - Transitive dependencies — pip-compile resolves them.
+#   - Dev tooling — that lives in requirements-dev.in.
+#
+# To regenerate requirements.lock after editing this file, run:
+#   make lock
+
+# --- Sub-package runtime deps (must match the setup.cfg install_requires) ---
+numpy >= 1.23, < 2.0
+pandas >= 1.5, < 3.0
+scipy >= 1.10
+coloredlogs >= 15.0
+gym >= 0.26
+# pomegranate 1.x is a complete rewrite with a different API; pin to the
+# legacy 0.x line that ABIDES was written against.
+pomegranate >= 0.14, < 1.0
+
+# --- JupyterLab classroom environment.  ipykernel/jupyter-server/notebook are
+#     pulled in transitively. ---
+jupyterlab >= 4.0, < 5.0
+
+# --- Plotting in notebooks ---
+matplotlib >= 3.7

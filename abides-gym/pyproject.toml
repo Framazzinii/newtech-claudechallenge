@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools >= 64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "abides-gym"
+version = "0.1.0"
+description = "ABIDES: OpenAI-Gym wrappers around abides-markets for RL research."
+readme = "README.md"
+license = { text = "BSD-3-Clause" }
+requires-python = ">=3.9"
+dependencies = [
+    "abides-markets",
+    "numpy >= 1.23, < 2.0",
+    "gym >= 0.26",
+]
+
+# RL training stack is opt-in: ray + wandb are only used by the example runner
+# scripts in scripts/, not by the importable package. Install with:
+#   pip install -e ./abides-gym[rllib]
+[project.optional-dependencies]
+rllib = [
+    "ray[rllib] >= 2.0",
+    "wandb >= 0.13",
+    "tqdm >= 4.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/tuckerbalch/jpmc-abides"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["abides_gym*"]

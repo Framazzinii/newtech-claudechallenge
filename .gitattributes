@@ -1,0 +1,41 @@
+# Default: let Git autodetect text vs. binary
+* text=auto eol=lf
+
+# --- Force LF on files that MUST have LF endings to work inside the Linux
+#     container, even on Windows hosts where core.autocrlf is on. ---
+*.sh             text eol=lf
+*.bash           text eol=lf
+*.py             text eol=lf
+*.yml            text eol=lf
+*.yaml           text eol=lf
+*.toml           text eol=lf
+*.cfg            text eol=lf
+*.ini            text eol=lf
+*.json           text eol=lf
+*.md             text eol=lf
+*.txt            text eol=lf
+
+Dockerfile       text eol=lf
+Makefile         text eol=lf
+.dockerignore    text eol=lf
+.gitattributes   text eol=lf
+.gitignore       text eol=lf
+
+# --- Binary: never normalise ---
+*.png            binary
+*.jpg            binary
+*.jpeg           binary
+*.gif            binary
+*.ico            binary
+*.pdf            binary
+*.bz2            binary
+*.gz             binary
+*.zip            binary
+*.parquet        binary
+*.npy            binary
+*.npz            binary
+*.pkl            binary
+*.h5             binary
+*.so             binary
+*.dylib          binary
+*.dll            binary

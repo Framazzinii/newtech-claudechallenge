@@ -1,0 +1,28 @@
+# Development-only dependencies. Installed inside the Docker image alongside
+# requirements.in / requirements.lock.
+#
+# To regenerate the fully-pinned requirements.lock from requirements.in +
+# requirements-dev.in, run:
+#   make lock
+
+# --- Testing ---
+pytest >= 8.0
+pytest-cov >= 4.1
+p-tqdm >= 1.4
+
+# --- Static analysis & formatting ---
+mypy >= 1.8
+black >= 24.0
+isort >= 5.12
+
+# --- Pre-commit hooks ---
+pre-commit >= 3.5
+
+# --- Documentation ---
+sphinx >= 7.0, < 8.0
+sphinx-autodoc-typehints >= 2.0
+sphinx-book-theme >= 1.1
+
+# Note: lockfile generation uses `uv pip compile`, which is provided by the
+# `uv` binary copied into the image directly from ghcr.io/astral-sh/uv. No
+# Python-level pip-tools dependency needed.
