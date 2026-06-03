@@ -1,0 +1,853 @@
+% =============================================================
+%  Hackathon "Build and Battle Your Trading Agent"
+%  PoliMi Graduate School of Management -- Algorithmic Trading 2026
+%
+%  Compilazione consigliata:
+%      pdflatex report.tex
+%      pdflatex report.tex     (per il sommario)
+%
+%  Sostituire i placeholder [INSERIRE ...] con i dati del team
+%  prima della consegna del 7 giugno.
+% =============================================================
+
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[italian]{babel}
+\usepackage{lmodern}
+\usepackage{microtype}
+
+\usepackage{geometry}
+\geometry{margin=2.5cm}
+
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=black,
+    citecolor=black,
+    urlcolor=blue!50!black
+}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{listings}
+
+\lstset{
+    basicstyle=\ttfamily\footnotesize,
+    commentstyle=\color{gray},
+    keywordstyle=\color{blue!60!black},
+    stringstyle=\color{red!50!black},
+    showstringspaces=false,
+    breaklines=true,
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    frame=single,
+    framerule=0.3pt,
+    rulecolor=\color{gray!40}
+}
+
+\setlength{\parskip}{0.4em}
+\setlength{\parindent}{0pt}
+
+\title{\textbf{Fast Trend Follower with Pyramiding\\and Triple-Stop System}\\[0.6em]
+       \large An Algorithmic Trading Agent for the ABIDES RMSC04 Market}
+\author{Team \textbf{[INSERIRE NOME TEAM]} \\[0.2em]
+        \small Members: [INSERIRE NOMI E MATRICOLE]}
+\date{PoliMi Graduate School of Management\\
+      Algorithmic Trading 2026 -- Hackathon\\
+      28 Maggio 2026}
+
+% =============================================================
+\begin{document}
+% =============================================================
+
+\maketitle
+
+\begin{abstract}
+\noindent
+Questo lavoro presenta un \emph{trading agent} algoritmico sviluppato
+durante l'hackathon ``Build and Battle Your Trading Agent'' della
+PoliMi Graduate School of Management, eseguito nel simulatore
+\textbf{ABIDES} (Agent-Based Interactive Discrete Event Simulator)
+sulla configurazione di mercato \textbf{RMSC04}.  La strategia
+implementata appartiene alla famiglia dei \emph{trend follower}:
+genera segnali di entrata tramite l'incrocio di due medie mobili
+esponenziali del mid-price, gestisce la posizione con \emph{pyramiding}
+turtle-style e protegge il capitale tramite un \emph{triple stop
+system} composto da hard stop, trailing stop (Chandelier exit) e
+take-profit parziale.  Le scelte di design sono motivate dalla
+letteratura accademica e operativa sui sistemi tecnici di breve
+periodo (Wilder, 1978; Dennis e Eckhardt, 1983; Chande e Kroll,
+1994; Murphy, 1999; Covel, 2007).  Il documento illustra il
+framework ABIDES, la configurazione RMSC04, la logica completa
+dell'agente, l'analisi del rischio e una discussione dei risultati
+attesi.
+\end{abstract}
+
+\vspace{1em}
+\hrule
+\vspace{1em}
+
+\tableofcontents
+
+\vspace{1em}
+\hrule
+
+% =============================================================
+\section{Introduzione}
+% =============================================================
+
+L'\emph{algorithmic trading} -- definito come l'esecuzione automatizzata
+di decisioni di trading attraverso regole formali -- rappresenta oggi
+una quota dominante del volume di scambi sui mercati azionari
+sviluppati (oltre il 70\% nelle principali borse statunitensi ed
+europee secondo i dati pubblici dei regulator).  Costruire un agente
+robusto richiede di affrontare tre macro-aree: la modellizzazione del
+mercato di destinazione, la specifica formale di un edge di trading
+basato su segnali osservabili e la gestione del rischio in tempo
+reale.
+
+L'hackathon del 28 maggio 2026 ha proposto agli studenti di
+realizzare un agente operante nel simulatore \textbf{ABIDES}
+\cite{byrd2020abides}, scegliendo fra tre famiglie di strategie:
+\emph{trend following}, \emph{mean reversion} e \emph{liquidity
+provision}.  Dopo aver studiato la natura del mercato simulato
+(presentata nelle sezioni successive) e aver condotto test
+preliminari su tutte e tre le famiglie, abbiamo selezionato la
+\emph{trend following} come strategia finale, in quanto risultata
+l'unica capace di generare un \emph{profit and loss} (PnL) positivo
+in modo consistente attraverso diversi \emph{seed} di simulazione.
+
+Il presente report descrive in dettaglio l'architettura
+dell'agente, i fondamenti teorici delle sue componenti, gli
+accorgimenti implementativi per garantire bassa latenza ed
+esecuzione corretta nel motore event-driven di ABIDES, e l'analisi
+del rischio.  La struttura del documento e' la seguente.  La
+Sezione \ref{sec:abides} introduce il framework ABIDES.  La
+Sezione \ref{sec:rmsc04} descrive la configurazione di mercato
+RMSC04.  La Sezione \ref{sec:strategy} illustra la strategia
+dell'agente.  La Sezione \ref{sec:theory} ne presenta i fondamenti
+teorici e bibliografici.  La Sezione \ref{sec:impl} discute
+l'implementazione in Python.  La Sezione \ref{sec:risk} approfondisce
+il \emph{risk management}.  La Sezione \ref{sec:results} riporta
+risultati e discussione.  La Sezione \ref{sec:conclusions} conclude.
+
+% =============================================================
+\section{Il framework ABIDES}
+\label{sec:abides}
+% =============================================================
+
+ABIDES \cite{byrd2020abides} e' un simulatore \emph{agent-based} ad
+eventi discreti progettato per riprodurre la microstruttura di un
+mercato azionario realistico.  La popolazione di agenti eterogenei,
+ciascuno dotato di stato privato e regole di comportamento proprie,
+interagisce esclusivamente attraverso un \emph{matching engine}
+centralizzato (l'\emph{exchange agent}) che mantiene il \emph{limit
+order book} (LOB) e applica il \emph{price-time priority matching}
+classico dei mercati elettronici.
+
+\subsection{Architettura: kernel e agenti}
+
+Il cuore del simulatore e' il \emph{kernel}, che implementa una
+\emph{Discrete Event Simulation} (DES): il tempo non avanza a passi
+fissi, ma salta da un evento all'altro.  Il kernel mantiene una coda
+di priorita' di triple
+$(t, \text{agent}_i, \text{message})$ e consegna ogni messaggio al
+destinatario al tempo simulato $t$.  Questo schema garantisce
+efficienza computazionale anche su orizzonti temporali lunghi (una
+giornata di trading completa).
+
+Gli agenti interagiscono con il kernel per:
+\begin{itemize}
+    \item \textbf{schedulare} il proprio prossimo \texttt{wakeup} a un
+          istante futuro arbitrario;
+    \item \textbf{inviare} messaggi ad altri agenti con latenza
+          configurabile (network + processing latency);
+    \item \textbf{interrogare} il tempo simulato corrente.
+\end{itemize}
+
+Ogni agente e' un'istanza di una classe Python che eredita da una
+gerarchia di base (\texttt{Agent} per gli agenti di sistema,
+\texttt{TradingAgent} per i partecipanti al mercato).  Le scelte di
+comportamento sono incapsulate nei metodi
+\texttt{kernel\_starting}, \texttt{wakeup} (il \emph{decision loop}),
+\texttt{receive\_message} (il \emph{dispatcher} di messaggi entranti)
+e \texttt{kernel\_stopping} (per la finalizzazione e il calcolo del
+\emph{mark-to-market}).
+
+\subsection{Tipologie di agenti e messaggi}
+
+La popolazione standard di un mercato ABIDES include:
+\begin{itemize}
+    \item \texttt{ExchangeAgent}: l'unico agente che mantiene il
+          LOB ed esegue il matching.  Riceve ordini, esegue fill,
+          invia conferme di esecuzione e \emph{snapshot} del libro.
+    \item \texttt{NoiseAgent}: agente non informato che invia ordini
+          di direzione casuale a tempi di arrivo non uniformi
+          (denser in apertura e chiusura).
+    \item \texttt{ValueAgent}: osserva il \emph{fundamental value} con
+          rumore gaussiano e aggiorna la propria \emph{belief} in
+          maniera bayesiana, comprando se ritiene il prezzo
+          sottovalutato e vendendo se sopravvalutato.
+    \item \texttt{MomentumAgent}: confronta una media mobile breve
+          (20 step) e una lunga (50 step) e opera nella direzione
+          del trend.
+    \item \texttt{MarketMakerAgent}: posta una ``ladder'' di quote
+          attorno al mid-price, con \emph{order size} proporzionale
+          al volume recentemente scambiato e \emph{spread window}
+          basato su un EWMA dello spread osservato.
+\end{itemize}
+
+I messaggi piu' rilevanti che un \texttt{TradingAgent} riceve sono:
+\texttt{Wakeup} (auto-schedulato), \texttt{LimitOrderMsg} e
+\texttt{MarketOrderMsg} (per inviare ordini),
+\texttt{CancelOrderMsg}, \texttt{OrderExecutedMsg} (notifica di
+fill), \texttt{QuerySpreadResponseMsg} (risposta a una query sullo
+spread corrente) e \texttt{MarketDataMsg} (broadcast periodico del
+LOB).
+
+\subsection{API rilevante per il nostro agente}
+
+Le primitive di \texttt{TradingAgent} di cui il nostro agente fa
+uso sono:
+\begin{itemize}
+    \item \texttt{get\_current\_spread(symbol)}: invia una query
+          allo \texttt{ExchangeAgent} per ottenere lo spread
+          corrente; la risposta arriva via \texttt{receive\_message}
+          come \texttt{QuerySpreadResponseMsg}.
+    \item \texttt{get\_known\_bid\_ask(symbol)}: legge l'ultimo
+          best bid e best ask noti all'agente (tuple
+          \texttt{(bid, bid\_vol, ask, ask\_vol)}).
+    \item \texttt{place\_market\_order(symbol, quantity, side)}:
+          invia un \emph{market order} che, in un LOB liquido,
+          viene eseguito immediatamente al miglior prezzo
+          disponibile sull'altro lato del book.
+    \item \texttt{self.holdings.get(symbol, 0)}: lettura
+          dell'inventario corrente in shares.
+    \item \texttt{self.mark\_to\_market(self.holdings)}: calcolo
+          del valore \emph{mark-to-market} corrente (cash +
+          inventario valutato all'ultimo prezzo eseguito).
+\end{itemize}
+
+% =============================================================
+\section{Il modello di mercato RMSC04}
+\label{sec:rmsc04}
+% =============================================================
+
+\textbf{RMSC04} (\emph{Reference Market Simulation Configuration},
+versione 4) e' la configurazione canonica di ABIDES progettata per
+riprodurre una giornata di trading realistica su un'azione liquida
+del listino statunitense.  Un singolo file di configurazione Python
+istanzia il kernel, l'\texttt{ExchangeAgent} sul ticker fittizio
+\texttt{ABM} (\emph{Agent-Based Market}) e una popolazione calibrata
+di agenti di background:
+
+\begin{center}
+\begin{tabular}{rl}
+\toprule
+\textbf{Quantita'} & \textbf{Tipo} \\
+\midrule
+1     & \texttt{ExchangeAgent} (limit order book) \\
+2     & Adaptive POV \texttt{MarketMakerAgents} \\
+102   & \texttt{ValueAgents} \\
+12    & \texttt{MomentumAgents} (rimossi nei nostri test) \\
+1000  & \texttt{NoiseAgents} \\
+\midrule
+$+1$  & Agente studente (la nostra strategia) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Processo del fundamental}
+
+Il \emph{fundamental value} sottostante e' un processo
+Ornstein-Uhlenbeck discretizzato:
+\begin{equation}
+    V_{t+1} = V_t + \kappa\,(\mu - V_t)\,\Delta t + \sigma\,\sqrt{\Delta t}\,\varepsilon_t,
+    \quad \varepsilon_t \sim \mathcal{N}(0, 1),
+    \label{eq:ou}
+\end{equation}
+dove $\mu$ e' il livello di equilibrio di lungo periodo, $\kappa>0$
+la velocita' di mean reversion e $\sigma$ la volatilita' istantanea.
+La proprieta' chiave dell'OU e' la \emph{mean reversion}: ogni
+deviazione dal livello $\mu$ tende a essere riassorbita su una scala
+temporale $1/\kappa$.
+
+\subsection{Microtrend osservabili}
+
+Sebbene il fundamental sia mean-reverting su scala di ore, le
+dinamiche di breve periodo del mid-price (1--5 minuti) presentano
+\emph{microtrend} riconoscibili.  Tre meccanismi li generano:
+\begin{enumerate}
+    \item Gli ordini dei \texttt{ValueAgents} arrivano con tempi
+          casuali e in batch; quando un cluster di acquisti incontra
+          la liquidita' disponibile, il mid-price subisce un
+          \emph{walk-up} di alcuni cent.  L'opposto vale per i
+          cluster di vendite.
+    \item I \texttt{NoiseAgents} hanno una distribuzione di arrivi
+          a forma di ``U'' (piu' densa in apertura e chiusura),
+          generando regimi di \emph{volatilita'} variabile.
+    \item I \texttt{MarketMakerAgents} reagiscono allo squilibrio di
+          flusso aggiornando le proprie quote con un certo ritardo,
+          alimentando il trend di breve.
+\end{enumerate}
+
+Questi microtrend sono l'\emph{edge} sfruttato dal nostro agente.
+Empiricamente, il semplice \texttt{TrendFollowerAgent} fornito a
+lezione come esempio vince il tournament in 5 dei 6 \emph{seed}
+testati (PnL medio $+35\$$, deviazione standard $12.7\$$),
+risultando la baseline piu' robusta fra le tre proposte iniziali.
+
+% =============================================================
+\section{La strategia: Fast Trend Follower}
+\label{sec:strategy}
+% =============================================================
+
+Il nostro agente, denominato internamente
+\texttt{HybridLPTrendAgent}, e' un \emph{fast trend follower} che
+opera esclusivamente con \emph{market orders} (\emph{liquidity
+taking}, non market making).  L'architettura si articola in quattro
+moduli:
+
+\begin{enumerate}
+    \item \textbf{Signal Generation}: doppia EMA del mid-price.
+    \item \textbf{Targeting con hysteresis}: traduce il segnale
+          in una posizione desiderata, evitando flip-flop.
+    \item \textbf{Pyramiding}: amplifica l'esposizione nei trend
+          duraturi.
+    \item \textbf{Triple Stop System}: hard stop, trailing stop,
+          take-profit parziale, daily stop, EOD flatten.
+\end{enumerate}
+
+\subsection{Signal Generation: EMA fast e slow}
+
+L'agente mantiene incrementalmente due medie mobili esponenziali del
+mid-price $m_t = (\text{bid}_t + \text{ask}_t)/2$:
+\begin{align}
+    \alpha_f = \frac{2}{n_f+1}, \quad
+    \alpha_s = \frac{2}{n_s+1}, \\
+    E^{(f)}_t = \alpha_f\,m_t + (1-\alpha_f)\,E^{(f)}_{t-1},
+    \label{eq:emafast}\\
+    E^{(s)}_t = \alpha_s\,m_t + (1-\alpha_s)\,E^{(s)}_{t-1},
+    \label{eq:emaslow}
+\end{align}
+con $n_f = 5$ e $n_s = 15$ osservazioni rispettivamente.  Con un
+\emph{wake-up} dell'agente di 5 secondi, le costanti effettive sono
+$\sim$25\,s e $\sim$75\,s, fornendo un buon compromesso fra
+reattivita' e filtraggio del rumore.
+
+\subsection{Targeting con hysteresis}
+
+La differenza $\Delta_t = E^{(f)}_t - E^{(s)}_t$ definisce la
+\emph{direzione desiderata} $d^*_t$:
+\begin{equation}
+    d^*_t = \begin{cases}
+        +1 & \text{se } \Delta_t > +h \\
+        -1 & \text{se } \Delta_t < -h \\
+        d_t & \text{altrimenti (deadband)}
+    \end{cases}
+    \label{eq:hysteresis}
+\end{equation}
+con $h = 3$ cent.  La \emph{deadband} di larghezza $2h$ impedisce
+inversioni di posizione quando le EMA oscillano attorno al valore
+comune (regime di range trading).  In particolare, se l'agente si
+trova in una posizione long e $\Delta_t$ entra nella deadband, la
+posizione viene mantenuta.
+
+A differenza dell'approccio classico \emph{signal-change tracking},
+in cui l'agente attende il cambio del segnale per agire, qui
+adottiamo un \textbf{targeting model}: ad ogni \emph{wake-up}
+confrontiamo la posizione effettiva $d_t$ con quella desiderata
+$d^*_t$ e, se differiscono in segno, riallineiamo via market order.
+Questo elimina la possibilita' di perdere il primo crossover (che,
+con il segnale-change, viene saltato se il filter momentum non e'
+ancora attivo).
+
+\subsection{Position pyramiding}
+
+Una volta aperta una posizione di taglia $Q_0 = 100$ shares, l'agente
+incrementa l'esposizione di $\Delta Q = 50$ shares per ogni
+movimento favorevole di $\delta = 20$ cent, fino ad un massimo di 4
+unita' totali ($Q_{\max} = 250$).  Formalmente, se l'ultimo
+\emph{add} e' avvenuto al prezzo $p_a$ e ora $m_t > p_a + \delta$ (per
+una posizione long), si aggiunge un'altra unita' e si aggiorna
+$p_a \leftarrow m_t$.
+
+Questa tecnica, codificata sistematicamente nel \emph{Turtle Trading
+System} \cite{covel2007turtle}, sfrutta l'asimmetria tipica dei
+trend reali: la maggior parte dei movimenti si conclude rapidamente,
+ma una minoranza si estende per multipli del costo unitario di
+ingresso.  Il pyramiding amplifica l'esposizione proprio nei trend
+duraturi, ottenendo una \emph{convexity} positiva del PnL.
+
+\subsection{Triple Stop System}
+
+Tre meccanismi di stop proteggono ogni posizione singola:
+
+\begin{description}[leftmargin=1.4em]
+    \item[Hard stop:] $|m_t - p_0| > H = 30$ cent dal prezzo medio di
+          ingresso $p_0$ chiude immediatamente la posizione. Limita
+          la \emph{maximum adverse excursion} per singolo trade.
+    \item[Trailing stop (Chandelier exit):] per una posizione long,
+          si registra il massimo prezzo raggiunto $M_t = \max_{s \le t} m_s$
+          dall'apertura della posizione; quando
+          $m_t < M_t - T$, $T = 40$ cent, si chiude. L'effetto
+          \emph{cut-your-losses, let-your-profits-run} e' realizzato
+          senza dover prevedere il top del trend.
+    \item[Partial take-profit:] quando $m_t > p_0 + P$ con
+          $P = 60$ cent (per il long), si chiude il 33\% della
+          posizione, cristallizzando una frazione del profitto e
+          lasciando correre il residuo sotto la sola protezione del
+          trailing stop.
+\end{description}
+
+A questi si aggiungono due salvaguardie a livello giornaliero:
+\begin{description}[leftmargin=1.4em]
+    \item[Daily stop M2M:] se il \emph{mark-to-market} corrente,
+          calcolato come $\text{MtM}_t = \text{cash}_t + Q_t \cdot m_t$,
+          scende sotto il \emph{starting cash} di piu' di
+          $D = 500\$$, l'agente liquida tutto e cessa l'operativita'
+          per il resto della giornata.
+    \item[EOD flatten:] 5 minuti prima della chiusura del mercato
+          (ovvero alle 17:25\,ET), l'inventario viene azzerato via
+          market order, escludendo qualunque rischio \emph{overnight}.
+\end{description}
+
+\subsection{Cooldown anti-whipsaw}
+
+Dopo un flatten innescato da uno stop forzato, l'agente registra la
+direzione corrente del segnale $\text{sign}(\Delta_t)$ e blocca
+\emph{nuovi ingressi sullo stesso lato} fino a quando il segnale non
+gira (cambio di segno di $\Delta_t$ o entrata in deadband).  Questo
+elimina il pattern \emph{stop-and-reverse-and-stop-again} che
+caratterizza i sistemi tecnici naive in regimi laterali.
+
+% =============================================================
+\section{Fondamenti teorici}
+\label{sec:theory}
+% =============================================================
+
+Ogni modulo della strategia poggia su un risultato consolidato della
+letteratura tecnica.
+
+\paragraph{EMA crossover.}
+L'incrocio di due medie mobili esponenziali e' uno dei segnali
+direzionali piu' studiati: viene presentato sistematicamente in
+\cite{murphy1999technical} come uno strumento standard di
+identificazione del trend.  L'EMA, rispetto alla \emph{simple moving
+average}, attribuisce peso maggiore alle osservazioni recenti
+($w_k = \alpha(1-\alpha)^k$), riducendo il \emph{lag} medio del
+segnale rispetto al prezzo corrente.
+
+\paragraph{Hysteresis e deadband.}
+L'aggiunta di una soglia di \emph{hysteresis} attorno al punto di
+incrocio (qui implementata come una deadband di $\pm h$) e' una
+tecnica standard nei sistemi di controllo per evitare oscillazioni
+indesiderate vicino al punto di switch.  Nel contesto del trading,
+la deadband filtra i micro-crossover prodotti dal rumore di breve.
+
+\paragraph{Pyramiding.}
+La tecnica di pyramiding lot-by-lot e' stata resa celebre dal
+\emph{Turtle Trading System} di Richard Dennis e William Eckhardt
+\cite{covel2007turtle}: nei loro \emph{rules}, dopo l'entrata
+iniziale di un'\emph{unit}, si aggiunge un'unita' aggiuntiva ogni
+$1/2\,N$ di movimento favorevole (con $N$ = ATR a 20 giorni), fino
+a un massimo di 4 unita'.  La nostra implementazione adatta questo
+schema ai timeframe intraday, sostituendo l'ATR con una soglia in
+cent fissa.
+
+\paragraph{ATR e trailing stop.}
+J. Welles Wilder Jr.\ in \cite{wilder1978new} introduce l'Average
+True Range (ATR), una misura di volatilita' calcolata come media
+mobile del \emph{true range} giornaliero, e la utilizza come
+parametro di base per i \emph{volatility-adjusted stops}.  Il
+nostro hard stop in cent puo' essere visto come una versione
+deterministica di un ATR-based stop, calibrato sull'analisi
+empirica della volatilita' del mid-price in RMSC04.
+
+\paragraph{Chandelier exit.}
+Tushar Chande e Stanley Kroll \cite{chande1994new} formalizzano il
+\emph{Chandelier Exit}: un trailing stop posizionato a $k \cdot \text{ATR}$
+sotto al massimo prezzo raggiunto dall'apertura della posizione (o
+sopra al minimo per le posizioni short).  La nostra
+implementazione usa il \emph{highest high} $M_t$ direttamente
+osservato sul mid-price con coefficiente $T = 40$ cent al posto di
+$k \cdot \text{ATR}$.
+
+\paragraph{Stop-loss giornalieri.}
+Van K. Tharp \cite{tharp1998trade} sottolinea l'importanza di
+limitare la \emph{maximum daily drawdown}, sia per ragioni
+psicologiche (negli operatori umani) sia per evitare cascade di
+margin call sui leveraged players.  Il daily stop M2M di \$500
+implementato qui realizza questo principio.
+
+\paragraph{Mercati artificiali e backtest.}
+Per una rassegna sull'uso di mercati simulati ad agenti come
+ambiente di test e training per strategie algoritmiche si veda
+\cite{byrd2020abides}.  ABIDES e' stato specificamente progettato
+per evitare i pitfall del \emph{lookback bias} e del
+\emph{survivorship bias} tipici dei backtest su dati storici, in
+quanto ogni run produce un universo di ordini causalmente coerente
+con la presenza dell'agente studente.
+
+% =============================================================
+\section{Implementazione}
+\label{sec:impl}
+% =============================================================
+
+L'agente e' implementato in un singolo file Python
+(\texttt{hybrid\_lp\_trend\_agent.py}, 422 righe) che eredita da
+\texttt{abides\_markets.agents.trading\_agent.TradingAgent}.
+L'integrazione con il framework e' minimale: l'agente viene
+istanziato, registrato nella configurazione RMSC04 tramite
+\texttt{config\_add\_agents} e il run viene avviato con la
+canonica chiamata \texttt{abides.run(cfg)}.
+
+\subsection{Lifecycle principale}
+
+Le tre callback fondamentali del lifecycle sono mostrate qui sotto
+in forma stilizzata:
+
+\begin{lstlisting}[language=Python]
+def kernel_starting(self, start_time):
+    super().kernel_starting(start_time)
+    # Calcola l'orario di EOD flatten (close - 5 min).
+    day_start = (start_time // NS_PER_DAY) * NS_PER_DAY
+    market_close = day_start + str_to_ns("17:30:00")
+    self.eod_flatten_time = market_close - self.eod_flatten_offset
+
+def wakeup(self, current_time):
+    can_trade = super().wakeup(current_time)
+    if not can_trade or self.stopped_out:
+        return
+    # EOD flatten window.
+    if current_time >= self.eod_flatten_time:
+        self._flatten_all()
+        self.stopped_out = True
+        return
+    # Routine: chiedi lo spread corrente all'exchange.
+    self.get_current_spread(self.symbol)
+    self.state = "AWAITING_SPREAD"
+
+def receive_message(self, current_time, sender_id, message):
+    super().receive_message(current_time, sender_id, message)
+    if (self.state == "AWAITING_SPREAD"
+            and isinstance(message, QuerySpreadResponseMsg)):
+        bid, _, ask, _ = self.get_known_bid_ask(self.symbol)
+        if bid and ask:
+            mid = (bid + ask) / 2.0
+            self._update_ema(mid)
+            self.n_obs += 1
+            if self.n_obs >= self.slow_span:
+                if self._check_daily_dd():
+                    self._flatten_all()
+                    self.stopped_out = True
+                else:
+                    self._trade(mid)
+        # Schedula il prossimo wake-up.
+        self.set_wakeup(current_time + self.wake_up_freq)
+        self.state = "AWAITING_WAKEUP"
+\end{lstlisting}
+
+\subsection{Decisione di trade}
+
+La funzione \texttt{\_trade} (qui in forma ridotta) implementa il
+\emph{targeting model}, i tre stop sulla posizione esistente, e il
+pyramiding:
+
+\begin{lstlisting}[language=Python]
+def _trade(self, mid):
+    inv = self.holdings.get(self.symbol, 0)
+    direction = sign(inv)
+    # Aggiorna highest_high / lowest_low per il chandelier.
+    if direction > 0:
+        self.highest_high = max(self.highest_high or mid, mid)
+    elif direction < 0:
+        self.lowest_low = min(self.lowest_low or mid, mid)
+
+    # Stop su posizione esistente: hard, trailing, partial TP.
+    if direction != 0 and self.initial_entry_price is not None:
+        if self._hard_stop_hit(mid, direction):  return self._flatten_all()
+        if self._trailing_stop_hit(mid, direction): return self._flatten_all()
+        self._maybe_partial_tp(mid, direction)
+
+    # Targeting con hysteresis: aggiusta direction se mismatch.
+    desired = self._desired_direction()
+    if self.cooldown_direction != 0:
+        if desired == self.cooldown_direction and inv == 0:
+            return
+        self.cooldown_direction = 0
+    if desired == 1 and direction <= 0:
+        self._enter_long(mid, target=self.base_size)
+        return
+    if desired == -1 and direction >= 0:
+        self._enter_short(mid, target=-self.base_size)
+        return
+
+    # Pyramiding sulla posizione esistente.
+    self._maybe_pyramid(mid, direction)
+\end{lstlisting}
+
+\subsection{Parametri e calibrazione}
+
+I parametri di default sono riassunti in Tabella \ref{tab:params}.
+La loro calibrazione iniziale e' stata guidata dall'analisi della
+volatilita' intraday di RMSC04 e dai risultati pubblicati nella
+documentazione del \texttt{TrendFollowerAgent} di esempio; non e'
+stata eseguita una ricerca esaustiva di grid o un'ottimizzazione
+sui seed di test, per evitare \emph{overfitting} al particolare
+sample.
+
+\begin{table}[h]
+\centering
+\caption{Parametri di default dell'agente.}
+\label{tab:params}
+\begin{tabular}{lll}
+\toprule
+\textbf{Parametro} & \textbf{Valore} & \textbf{Significato} \\
+\midrule
+\texttt{fast\_span}            & 5         & EMA fast (osservazioni) \\
+\texttt{slow\_span}            & 15        & EMA slow (osservazioni) \\
+\texttt{hysteresis\_cents}     & 3         & Deadband (cents) \\
+\texttt{wake\_up\_freq}        & 5 s       & Frequenza di refresh \\
+\texttt{base\_size}            & 100       & Size iniziale per segnale \\
+\texttt{unit\_size}            & 50        & Size per pyramid add \\
+\texttt{max\_units}            & 4         & Massimo unita' totali \\
+\texttt{pyramid\_step\_cents}  & 20        & Step di add (cents) \\
+\texttt{hard\_stop\_cents}     & 30        & Hard stop (cents/share) \\
+\texttt{trail\_stop\_cents}    & 40        & Trailing stop (cents/share) \\
+\texttt{take\_profit\_cents}   & 60        & Soglia TP parziale \\
+\texttt{take\_profit\_fraction}& 0.33      & Frazione chiusa al TP \\
+\texttt{max\_daily\_loss}      & \$500     & Daily stop M2M \\
+\texttt{eod\_flatten\_offset}  & 5 min     & Anticipo EOD \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =============================================================
+\section{Risk Management}
+\label{sec:risk}
+% =============================================================
+
+La gestione del rischio del nostro agente e' strutturata su quattro
+livelli gerarchici, in ordine crescente di severita':
+
+\begin{enumerate}
+    \item \textbf{Livello micro -- per trade:}
+          Hard stop e trailing stop limitano la perdita massima
+          per singola posizione.  Con $H = 30$ cent e taglia
+          variabile fra $100$ e $250$ shares, la
+          \emph{maximum adverse excursion} per trade e' compresa fra
+          \$30 e \$75.
+    \item \textbf{Livello mid -- per sessione:}
+          Il partial take-profit fissa parte del profitto realizzato,
+          riducendo la dipendenza del PnL finale dall'andamento del
+          residuo.  In termini di \emph{realized PnL distribution},
+          questo accorgimento taglia la \emph{volatilita'} del
+          residuo non realizzato e migliora il \emph{Sharpe ratio}.
+    \item \textbf{Livello macro -- giornaliero:}
+          Il daily stop M2M di \$500 garantisce che, nel caso
+          peggiore (concatenazione di stop loss + slippage di
+          esecuzione), la perdita giornaliera massima sia limitata.
+          Il EOD flatten elimina il rischio overnight.
+    \item \textbf{Livello strutturale -- comportamentale:}
+          Il cooldown anti-whipsaw protegge dalla degradazione del
+          PnL nei regimi laterali, dove un trend follower naive
+          accumulerebbe perdite per via dei falsi segnali ripetuti.
+\end{enumerate}
+
+\paragraph{Profilo Risk/Reward asimmetrico.}
+Il profilo di payoff del singolo trade e' asimmetrico per costruzione:
+\begin{itemize}
+    \item \emph{Downside:} limitato a $-H = -\$0.30$ per share.
+    \item \emph{Upside garantito:} $+\$0.60$ per share su 1/3 della
+          posizione, cristallizzato al partial TP.
+    \item \emph{Upside opzionale:} il restante 2/3 della posizione
+          partecipa al trend fino allo \emph{snap-back} che attiva il
+          trailing stop a $-T = -\$0.40$ dal massimo.
+\end{itemize}
+
+Il \emph{reward-to-risk ratio} minimo (\emph{ex ante}) e' quindi
+$0.60/0.30 = 2.0$, escludendo i contributi delle pyramid units.  In
+trend duraturi (in cui scattano 3 pyramid add e la posizione
+raggiunge i 250 shares), l'upside cresce in modo non-lineare e il
+ratio effettivo puo' superare $5\times$.
+
+\paragraph{Differenze rispetto al \texttt{TrendFollowerAgent} di
+esempio.}
+La Tabella \ref{tab:diff} riassume le differenze chiave fra la nostra
+implementazione e la baseline fornita a lezione.
+
+\begin{table}[h]
+\centering
+\caption{Confronto sintetico vs.\ \texttt{TrendFollowerAgent} di esempio.}
+\label{tab:diff}
+\begin{tabular}{lll}
+\toprule
+\textbf{Feature} & \textbf{Baseline} & \textbf{Nostro agente} \\
+\midrule
+Direzione               & Solo long          & Long + short \\
+Wake-up frequency       & 60\,s              & 5\,s \\
+EMA fast / slow         & 10 / 30            & 5 / 15 \\
+Trigger di entry        & Signal change      & Targeting continuo \\
+Size base per segnale   & 40 shares          & 100 + pyramid (250) \\
+Pyramiding              & No                 & Si \\
+Hard stop               & 20 cent            & 30 cent \\
+Trailing stop           & No                 & Chandelier 40 cent \\
+Take-profit parziale    & No                 & 33\% a +60 cent \\
+Daily stop M2M          & No                 & \$500 \\
+EOD flatten             & No                 & 5 min pre-close \\
+Cooldown anti-whipsaw   & No                 & Si \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =============================================================
+\section{Risultati attesi e discussione}
+\label{sec:results}
+% =============================================================
+
+Il \emph{TrendFollowerAgent} di esempio ottiene un PnL medio di
+$+35\$$ con deviazione standard di $12.7\$$ su 6 seed di test
+(\texttt{[2, 42, 123, 777, 2024, 31415]}).  La nostra versione
+\textbf{amplifica} tale baseline in due modi:
+
+\begin{itemize}
+    \item \emph{Trade simmetrici long/short}: la baseline cattura
+          solo i trend bullish, lasciando sul tavolo l'edge dei
+          trend bearish.  Nel campione di mercato, le due metriche
+          sono approssimativamente simmetriche, quindi il PnL atteso
+          \emph{circa raddoppia}.
+    \item \emph{Size $2.5\times$ + pyramiding}: la base size 100
+          (vs.\ 40) e il pyramiding fino a 250 amplificano
+          ulteriormente il PnL per trend catturato.  Su una
+          frazione (stimata $\sim$30\%) di trend duraturi, il
+          pyramiding contribuisce ulteriori 2-3 unita' di profitto
+          rispetto alla baseline.
+\end{itemize}
+
+In condizioni nominali ci attendiamo dunque un PnL medio
+nell'ordine di $+100\$$ -- $+250\$$ per giornata di trading, con
+deviazione standard maggiore della baseline (a causa
+dell'amplificazione del pyramiding) ma ratio Sharpe simile o
+superiore.  Le verifiche empiriche sul \texttt{tournament.ipynb}
+sono in corso al momento della consegna del report.
+
+\paragraph{Limiti e potenziali ottimizzazioni.}
+\begin{itemize}
+    \item \emph{Calibrazione statica}: i parametri sono fissati a
+          valori derivati dall'analisi della volatilita' intraday
+          tipica di RMSC04; una variante ATR-adattiva potrebbe
+          migliorare la robustezza in regimi di volatilita' anomala.
+    \item \emph{Assenza di filtro macro}: non utilizziamo segnali
+          a piu' alto timeframe (ad es.\ momentum giornaliero) per
+          confermare il trend intraday; un \emph{trend filter}
+          giornaliero potrebbe ridurre i falsi segnali nei
+          mercati laterali estesi.
+    \item \emph{Sensibilita' al seed}: i sistemi trend-following
+          sono notoriamente sensibili al \emph{path} dei prezzi;
+          un'analisi su un campione piu' ampio di seed (50+) sarebbe
+          desiderabile per stimare con maggiore precisione il
+          \emph{worst-case drawdown}.
+\end{itemize}
+
+% =============================================================
+\section{Conclusioni}
+\label{sec:conclusions}
+% =============================================================
+
+Abbiamo presentato un \emph{trading agent} a strategia
+trend-following per il simulatore ABIDES nella configurazione
+RMSC04.  Le scelte di design sono state guidate da tre principi:
+\textbf{semplicita'} (un singolo file Python di circa 400 righe,
+nessuna dipendenza esterna oltre \texttt{numpy} e \texttt{abides\_*}),
+\textbf{robustezza} (un \emph{triple stop system} che protegge
+gerarchicamente per trade, per sessione e per giornata) e
+\textbf{rispondenza alla microstruttura del mercato simulato} (la
+mean reversion del fundamental OU di RMSC04 genera microtrend
+sfruttabili da una doppia EMA con timeframe brevi).
+
+Lavori futuri comprendono: (i)~l'introduzione di una versione
+ATR-adattiva degli stop, (ii)~l'aggiunta di un filtro macro
+giornaliero, (iii)~lo sviluppo di una variante con \emph{reinforcement
+learning} che apprenda online i parametri ottimali su un orizzonte
+multi-giorno.  In una prospettiva piu' ampia, la metodologia
+modulare presentata (signal + targeting + pyramiding + triple stop)
+e' direttamente trasferibile ad altre famiglie di strategie nello
+stesso framework ABIDES.
+
+% =============================================================
+\section*{Ringraziamenti}
+% =============================================================
+
+Si ringraziano i docenti del corso Algorithmic Trading 2026 della
+PoliMi Graduate School of Management per la disponibilita' del
+framework ABIDES, dei notebook \texttt{agent\_monitor.ipynb} e
+\texttt{tournament.ipynb} e degli agenti esempio
+\texttt{BasicAgent}, \texttt{MeanReversionAgent},
+\texttt{TrendFollowerAgent} e \texttt{LiquidityProviderAgent}
+utilizzati come baseline e codebase di partenza.
+
+% =============================================================
+\begin{thebibliography}{9}
+% =============================================================
+
+\bibitem{byrd2020abides}
+Byrd, D., Hybinette, M., Balch, T.\ H.
+\emph{ABIDES: Towards High-Fidelity Market Simulation for AI
+Research}.
+Proceedings of the ACM International Conference on AI in Finance
+(ICAIF), 2020.
+
+\bibitem{murphy1999technical}
+Murphy, J.\ J.
+\emph{Technical Analysis of the Financial Markets: A Comprehensive
+Guide to Trading Methods and Applications}.
+New York Institute of Finance, 1999.
+
+\bibitem{wilder1978new}
+Wilder, J.\ W.\ Jr.
+\emph{New Concepts in Technical Trading Systems}.
+Trend Research, 1978.
+
+\bibitem{chande1994new}
+Chande, T., Kroll, S.
+\emph{The New Technical Trader: Boost Your Profit by Plugging into
+the Latest Indicators}.
+Wiley, 1994.
+
+\bibitem{covel2007turtle}
+Covel, M.\ W.
+\emph{The Complete TurtleTrader: The Legend, the Lessons, the
+Results}.
+HarperBusiness, 2007.
+
+\bibitem{tharp1998trade}
+Tharp, V.\ K.
+\emph{Trade Your Way to Financial Freedom}.
+McGraw-Hill, 1998.
+
+\bibitem{vince1992mathematics}
+Vince, R.
+\emph{The Mathematics of Money Management: Risk Analysis Techniques
+for Traders}.
+Wiley, 1992.
+
+\bibitem{bertsimas1998optimal}
+Bertsimas, D., Lo, A.\ W.
+\emph{Optimal Control of Execution Costs}.
+Journal of Financial Markets, vol.\ 1, no.\ 1, pp.\ 1--50, 1998.
+
+\bibitem{avellaneda2010stat}
+Avellaneda, M., Lee, J.\ H.
+\emph{Statistical Arbitrage in the U.S.\ Equities Market}.
+Quantitative Finance, vol.\ 10, no.\ 7, pp.\ 761--782, 2010.
+
+\end{thebibliography}
+
+\end{document}
